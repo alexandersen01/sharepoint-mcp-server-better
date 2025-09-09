@@ -1,6 +1,6 @@
 {
   "name": "@alexandersen01/sharepoint-mcp-server-better",
-  "version": "0.2.14",
+  "version": "0.3.0",
   "description": "A Model Context Protocol server for browsing and interacting with Microsoft SharePoint sites and documents. Supports comprehensive document parsing including PDF, Word, Excel, PowerPoint, and more.",
   "private": false,
   "type": "module",
@@ -45,11 +45,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "0.6.0",
-    "pdf-parse": "^1.1.1",
     "mammoth": "^1.6.0",
+    "node-html-parser": "^6.1.12",
+    "pdfjs-dist": "^5.4.149",
     "xlsx": "^0.18.5",
-    "yauzl": "^3.0.0",
-    "node-html-parser": "^6.1.12"
+    "yauzl": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",

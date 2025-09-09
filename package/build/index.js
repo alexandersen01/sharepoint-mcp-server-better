@@ -87,7 +87,7 @@ class DocumentParser {
     }
 
     /**
-     * Parse PDF documents using a more reliable approach
+     * Parse PDF documents using pdfjs-dist (reliable and fast)
      */
     static async parsePDF(buffer) {
         try {
@@ -101,79 +101,49 @@ class DocumentParser {
                 throw new Error('PDF buffer is empty');
             }
             
-            // Try to use pdf-parse with very minimal configuration to avoid test file issues
-            try {
-                const { default: pdfParse } = await import('pdf-parse');
-                
-                // Use the most basic configuration possible
-                const data = await pdfParse(buffer);
-                
-                return {
-                    text: data.text || '[No text content found in PDF]',
-                    metadata: {
-                        pages: data.numpages || 0,
-                        info: data.info || {},
-                        extractedBy: 'pdf-parse'
+            // Import pdfjs-dist
+            const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+            
+            // Load the PDF document
+            const loadingTask = pdfjs.getDocument({
+                data: new Uint8Array(buffer),
+                verbosity: 0 // Reduce logging
+            });
+            
+            const pdf = await loadingTask.promise;
+            let fullText = '';
+            
+            // Extract text from each page
+            for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                try {
+                    const page = await pdf.getPage(pageNum);
+                    const textContent = await page.getTextContent();
+                    
+                    // Combine all text items from the page
+                    const pageText = textContent.items
+                        .map(item => item.str)
+                        .join(' ')
+                        .trim();
+                    
+                    if (pageText) {
+                        fullText += `\n\n--- Page ${pageNum} ---\n${pageText}`;
                     }
-                };
-            } catch (pdfParseError) {
-                // If pdf-parse fails with the test file error, fall back to basic PDF info extraction
-                if (pdfParseError.message.includes('test/data/05-versions-space.pdf') || 
-                    pdfParseError.message.includes('ENOENT') ||
-                    pdfParseError.code === 'ENOENT') {
-                    
-                    console.warn('pdf-parse library has test file dependency issue, using fallback extraction');
-                    
-                    // Basic PDF header validation
-                    const pdfHeader = buffer.slice(0, 5).toString();
-                    if (!pdfHeader.startsWith('%PDF-')) {
-                        throw new Error('Invalid PDF format - file does not start with PDF header');
-                    }
-                    
-                    // Extract basic metadata by searching for common PDF patterns
-                    const pdfString = buffer.toString('binary');
-                    
-                    // Try to extract page count
-                    const pageMatches = pdfString.match(/\/Count\s+(\d+)/g);
-                    let pageCount = 0;
-                    if (pageMatches && pageMatches.length > 0) {
-                        const lastMatch = pageMatches[pageMatches.length - 1];
-                        const match = lastMatch.match(/\/Count\s+(\d+)/);
-                        if (match) {
-                            pageCount = parseInt(match[1], 10);
-                        }
-                    }
-                    
-                    // Basic text extraction attempt (very limited)
-                    // This is a simplified approach and won't work for all PDFs
-                    const textMatches = pdfString.match(/\(([^)]+)\)/g);
-                    let extractedText = '';
-                    if (textMatches) {
-                        extractedText = textMatches
-                            .map(match => match.slice(1, -1)) // Remove parentheses
-                            .filter(text => text.length > 2) // Filter out short strings
-                            .join(' ')
-                            .substring(0, 1000); // Limit to first 1000 chars
-                    }
-                    
-                    if (!extractedText.trim()) {
-                        extractedText = '[PDF content detected but text extraction failed - this may be a scanned document or have complex formatting]';
-                    }
-                    
-                    return {
-                        text: extractedText,
-                        metadata: {
-                            pages: pageCount || 'unknown',
-                            size: buffer.length,
-                            extractedBy: 'fallback-parser',
-                            note: 'Text extraction used fallback method due to library limitations'
-                        }
-                    };
-                } else {
-                    // Re-throw other pdf-parse errors
-                    throw pdfParseError;
+                } catch (pageError) {
+                    console.warn(`Error extracting text from page ${pageNum}:`, pageError.message);
+                    fullText += `\n\n--- Page ${pageNum} ---\n[Error extracting text from this page: ${pageError.message}]`;
                 }
             }
+            
+            return {
+                text: fullText.trim() || '[No text content found in PDF]',
+                metadata: {
+                    pages: pdf.numPages,
+                    extractedBy: 'pdfjs-dist',
+                    pdfVersion: pdf.pdfInfo?.PDFFormatVersion || 'unknown',
+                    size: buffer.length
+                }
+            };
+            
         } catch (error) {
             console.error('PDF parsing error:', error.message);
             throw new Error(`PDF parsing failed: ${error.message}. This may be due to an encrypted, corrupted, or unsupported PDF format.`);
