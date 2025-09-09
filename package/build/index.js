@@ -16,9 +16,29 @@ import { parse as parseHtml } from 'node-html-parser';
 /**
  * Environment variables required for SharePoint authentication
  */
-const { SHAREPOINT_URL, TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, DEFAULT_FOLDER_PATH } = process.env;
-if (!SHAREPOINT_URL || !TENANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error("Required environment variables: SHAREPOINT_URL, TENANT_ID, CLIENT_ID, CLIENT_SECRET");
+const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, DEFAULT_FOLDER_PATH } = process.env;
+if (!TENANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error("Required environment variables: TENANT_ID, CLIENT_ID, CLIENT_SECRET");
+}
+
+// Validate that we have at least a default site URL for SharePoint operations
+if (!DEFAULT_SITE_URL) {
+    console.warn("Warning: DEFAULT_SITE_URL not set. Site URL will be required for all operations.");
+}
+
+/**
+ * Extract SharePoint tenant URL from a site URL
+ */
+function getSharePointTenantUrl(siteUrl) {
+    if (!siteUrl) {
+        throw new Error("Site URL is required to determine SharePoint tenant");
+    }
+    try {
+        const url = new URL(siteUrl);
+        return `${url.protocol}//${url.hostname}`;
+    } catch (error) {
+        throw new Error(`Invalid site URL format: ${siteUrl}`);
+    }
 }
 /**
  * Document parser for various file formats
@@ -67,20 +87,99 @@ class DocumentParser {
     }
 
     /**
-     * Parse PDF documents
+     * Parse PDF documents using a more reliable approach
      */
     static async parsePDF(buffer) {
-        // Dynamic import to avoid debug mode issues
-        const { default: pdfParse } = await import('pdf-parse');
-        const data = await pdfParse(buffer);
-        return {
-            text: data.text,
-            metadata: {
-                pages: data.numpages,
-                info: data.info
+        try {
+            // Ensure we're working with a proper buffer
+            if (!Buffer.isBuffer(buffer)) {
+                throw new Error('PDF data must be a Buffer');
             }
-        };
+            
+            // Check if buffer is not empty
+            if (buffer.length === 0) {
+                throw new Error('PDF buffer is empty');
+            }
+            
+            // Try to use pdf-parse with very minimal configuration to avoid test file issues
+            try {
+                const { default: pdfParse } = await import('pdf-parse');
+                
+                // Use the most basic configuration possible
+                const data = await pdfParse(buffer);
+                
+                return {
+                    text: data.text || '[No text content found in PDF]',
+                    metadata: {
+                        pages: data.numpages || 0,
+                        info: data.info || {},
+                        extractedBy: 'pdf-parse'
+                    }
+                };
+            } catch (pdfParseError) {
+                // If pdf-parse fails with the test file error, fall back to basic PDF info extraction
+                if (pdfParseError.message.includes('test/data/05-versions-space.pdf') || 
+                    pdfParseError.message.includes('ENOENT') ||
+                    pdfParseError.code === 'ENOENT') {
+                    
+                    console.warn('pdf-parse library has test file dependency issue, using fallback extraction');
+                    
+                    // Basic PDF header validation
+                    const pdfHeader = buffer.slice(0, 5).toString();
+                    if (!pdfHeader.startsWith('%PDF-')) {
+                        throw new Error('Invalid PDF format - file does not start with PDF header');
+                    }
+                    
+                    // Extract basic metadata by searching for common PDF patterns
+                    const pdfString = buffer.toString('binary');
+                    
+                    // Try to extract page count
+                    const pageMatches = pdfString.match(/\/Count\s+(\d+)/g);
+                    let pageCount = 0;
+                    if (pageMatches && pageMatches.length > 0) {
+                        const lastMatch = pageMatches[pageMatches.length - 1];
+                        const match = lastMatch.match(/\/Count\s+(\d+)/);
+                        if (match) {
+                            pageCount = parseInt(match[1], 10);
+                        }
+                    }
+                    
+                    // Basic text extraction attempt (very limited)
+                    // This is a simplified approach and won't work for all PDFs
+                    const textMatches = pdfString.match(/\(([^)]+)\)/g);
+                    let extractedText = '';
+                    if (textMatches) {
+                        extractedText = textMatches
+                            .map(match => match.slice(1, -1)) // Remove parentheses
+                            .filter(text => text.length > 2) // Filter out short strings
+                            .join(' ')
+                            .substring(0, 1000); // Limit to first 1000 chars
+                    }
+                    
+                    if (!extractedText.trim()) {
+                        extractedText = '[PDF content detected but text extraction failed - this may be a scanned document or have complex formatting]';
+                    }
+                    
+                    return {
+                        text: extractedText,
+                        metadata: {
+                            pages: pageCount || 'unknown',
+                            size: buffer.length,
+                            extractedBy: 'fallback-parser',
+                            note: 'Text extraction used fallback method due to library limitations'
+                        }
+                    };
+                } else {
+                    // Re-throw other pdf-parse errors
+                    throw pdfParseError;
+                }
+            }
+        } catch (error) {
+            console.error('PDF parsing error:', error.message);
+            throw new Error(`PDF parsing failed: ${error.message}. This may be due to an encrypted, corrupted, or unsupported PDF format.`);
+        }
     }
+
 
     /**
      * Parse Word documents (.doc, .docx)
@@ -819,7 +918,11 @@ class SharePointServer {
             }
 
             // Get file content as buffer for parsing
-            const buffer = Buffer.from(await response.arrayBuffer());
+            const arrayBuffer = await response.arrayBuffer();
+            if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+                throw new Error('File content is empty or could not be retrieved');
+            }
+            const buffer = Buffer.from(arrayBuffer);
 
             try {
                 // Parse the document using our document parser
