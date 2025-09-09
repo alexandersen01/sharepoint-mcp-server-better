@@ -16,7 +16,7 @@ import { parse as parseHtml } from 'node-html-parser';
 /**
  * Environment variables required for SharePoint authentication
  */
-const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, DEFAULT_FOLDER_PATH } = process.env;
+const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, DEFAULT_FOLDER_PATH, SEARCH_REGION } = process.env;
 if (!TENANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
     throw new Error("Required environment variables: TENANT_ID, CLIENT_ID, CLIENT_SECRET");
 }
@@ -430,7 +430,7 @@ class SharePointServer {
             tools: [
                 {
                     name: "search_files",
-                    description: "Search for files and documents in SharePoint using Microsoft Graph Search API. Can be scoped to specific site and folder to reduce noise.",
+                    description: "Search for files and documents in SharePoint using Microsoft Graph Search API. Performs broad search across your SharePoint tenant and optionally filters to specific site if siteUrl is provided.",
                     inputSchema: {
                         type: "object",
                         properties: {
@@ -440,7 +440,7 @@ class SharePointServer {
                             },
                             siteUrl: {
                                 type: "string",
-                                description: "Optional SharePoint site URL to scope search to (uses DEFAULT_SITE_URL if not provided)",
+                                description: "Optional SharePoint site URL to filter results to specific site (if not provided, searches across entire tenant)",
                             },
                             folderPath: {
                                 type: "string",
@@ -646,17 +646,9 @@ class SharePointServer {
         try {
             let searchQuery = query;
             
-            // If we have site and/or folder constraints, enhance the search query
-            if (siteUrl) {
-                // Extract site name from URL for path constraint
-                const url = new URL(siteUrl);
-                const siteName = url.pathname.split('/').pop();
-                searchQuery += ` path:"${siteName}"`;
-                
-                if (folderPath) {
-                    searchQuery += ` AND path:"${folderPath}"`;
-                }
-            }
+            // Enhanced search approach: Use site constraints more effectively
+            // Instead of adding path constraints to the query string, we'll filter results post-search
+            // This avoids overly restrictive search queries that return 0 results
             
             const searchRequest = {
                 requests: [{
@@ -665,21 +657,39 @@ class SharePointServer {
                             queryString: searchQuery,
                         },
                         size: limit,
+                        region: SEARCH_REGION || "NAM", // Default to NAM if not specified
                     }],
             };
             
             const searchResults = await this.graphRequest("/search/query", "POST", searchRequest);
             
-            // If we have site filtering, further filter results to ensure they're from the correct site
-            if (siteUrl && searchResults.value && searchResults.value[0]?.hitsContainers) {
-                const siteId = await this.getSiteIdFromUrl(siteUrl);
-                searchResults.value[0].hitsContainers = searchResults.value[0].hitsContainers.map(container => ({
-                    ...container,
-                    hits: container.hits?.filter(hit => 
-                        hit.resource?.parentReference?.siteId === siteId ||
-                        hit.resource?.webUrl?.includes(siteUrl)
-                    ) || []
-                }));
+            // If we have site filtering and got results, filter them to the correct site
+            // Only apply filtering if we have a specific siteUrl (not just DEFAULT_SITE_URL)
+            if (args?.siteUrl && siteUrl && searchResults.value && searchResults.value[0]?.hitsContainers) {
+                try {
+                    const siteId = await this.getSiteIdFromUrl(siteUrl);
+                    const originalHitsCount = searchResults.value[0].hitsContainers.reduce((total, container) => 
+                        total + (container.hits?.length || 0), 0);
+                    
+                    searchResults.value[0].hitsContainers = searchResults.value[0].hitsContainers.map(container => ({
+                        ...container,
+                        hits: container.hits?.filter(hit => 
+                            hit.resource?.parentReference?.siteId === siteId ||
+                            hit.resource?.webUrl?.includes(siteUrl)
+                        ) || []
+                    }));
+                    
+                    const filteredHitsCount = searchResults.value[0].hitsContainers.reduce((total, container) => 
+                        total + (container.hits?.length || 0), 0);
+                    
+                    // Add debug info about filtering
+                    if (originalHitsCount > 0) {
+                        console.error(`Search filtering: ${originalHitsCount} results before filtering, ${filteredHitsCount} after filtering by site`);
+                    }
+                } catch (filterError) {
+                    console.error(`Site filtering failed, returning unfiltered results: ${filterError.message}`);
+                    // Continue with unfiltered results if filtering fails
+                }
             }
             
             return {
