@@ -1,0 +1,58 @@
+{
+  "name": "@alexandersen01/sharepoint-mcp-server-better",
+  "version": "0.2.2",
+  "description": "A Model Context Protocol server for browsing and interacting with Microsoft SharePoint sites and documents. Supports comprehensive document parsing including PDF, Word, Excel, PowerPoint, and more.",
+  "private": false,
+  "type": "module",
+  "license": "MPL-2.0",
+  "author": "SharePoint MCP Server Contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexandersen01/sharepoint-mcp-server-better.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexandersen01/sharepoint-mcp-server-better/issues"
+  },
+  "homepage": "https://github.com/alexandersen01/sharepoint-mcp-server-better#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sharepoint",
+    "microsoft-graph",
+    "claude",
+    "ai",
+    "assistant",
+    "document-parsing",
+    "pdf",
+    "word",
+    "excel",
+    "powerpoint"
+  ],
+  "bin": {
+    "sharepoint-mcp": "build/index.js"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "echo 'Build not needed - working with compiled JS'",
+    "prepare": "echo 'No preparation needed'",
+    "watch": "echo 'Watch not available'",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "test": "node test/basic-test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "pdf-parse": "^1.1.1",
+    "mammoth": "^1.6.0",
+    "xlsx": "^0.18.5",
+    "yauzl": "^3.0.0",
+    "node-html-parser": "^6.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
