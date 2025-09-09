@@ -112,6 +112,38 @@ sharepoint-mcp-server
 3. Grant admin consent for the permissions
 4. Create a client secret
 
+### Installation in librechat: 
+
+Open `librechat.yaml`
+
+add the following at the bottom of the file:
+
+```bash
+mcpServers:
+  NAME_OF_MCP:
+    command: npx
+    args:
+      - -y
+      - "@alexandersen01/sharepoint-mcp-server-better"
+    env:
+      SEARCH_REGION: "EMEA"
+      DEFAULT_FOLDER_PATH: "${DEFAULT_FOLDER_PATH}"
+      DEFAULT_SITE_URL: "${DEFAULT_SITE_URL}"
+      
+      TENANT_ID: "${TENANT_ID}"
+      CLIENT_ID: "${CLIENT_ID}"
+      CLIENT_SECRET: "${CLIENT_SECRET}"
+    chatMenu: true
+    serverInstructions: |
+      SharePoint MCP Server provides access to your SharePoint sites and documents.
+      Use this to search, read, and interact with SharePoint content including:
+      - Site collections and subsites
+      - Document libraries
+      - Lists and list items
+      - File operations (read, search, metadata)
+  
+```
+
 ### Environment Variables
 
 Set the following environment variables:
