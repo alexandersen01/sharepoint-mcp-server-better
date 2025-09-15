@@ -144,6 +144,17 @@ mcpServers:
   
 ```
 
+**Remember to run the following command to restart the container**
+
+```bash
+ssh -p 22 USER@SSH_ADDR 'cd /home/USER/LibreChat && docker compose -f ./deploy-compose.yml -f ./deploy-compose.override.yml down && docker compose -f ./deploy-compose.yml -f ./deploy-compose.override.yml pull && docker compose -f ./deploy-compose.yml -f ./deploy-compose.override.yml up -d --remove-orphans'
+```
+
+If `deploy-compose.override.yml` is not found:
+```bash
+ssh -p 22 USERs@SSH_ADDR 'cd /home/USER/LibreChat && docker compose -f ./deploy-compose.yml down && docker compose -f ./deploy-compose.yml pull && docker compose -f ./deploy-compose.yml up -d --remove-orphans'
+```
+
 ### Environment Variables
 
 Set the following environment variables:
@@ -158,6 +169,8 @@ CLIENT_SECRET=your-azure-app-client-secret
 DEFAULT_SITE_URL=https://yourtenant.sharepoint.com/sites/yoursite
 DEFAULT_FOLDER_PATH=Documents/YourFolder
 ```
+
+
 
 #### Site and Folder Filtering
 
