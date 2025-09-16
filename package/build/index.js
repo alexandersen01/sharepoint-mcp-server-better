@@ -614,6 +614,7 @@ class SharePointServer {
         }
 
         console.error(`[SECURITY] Search restricted to: ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`);
+        console.error(`[DEBUG] Search query received: "${query}"`);
 
         try {
             // SECURITY: Search is automatically restricted to allowed site and folder
@@ -621,12 +622,14 @@ class SharePointServer {
                 requests: [{
                     entityTypes: ["driveItem"],
                     query: {
-                        queryString: `${query} AND path:"${DEFAULT_FOLDER_PATH}"`,
+                        queryString: `${query} AND site:"${DEFAULT_SITE_URL}"`,
                     },
                     size: limit,
-                    region: SEARCH_REGION || "NAM",
+                    region: SEARCH_REGION || "EMEA",
                 }],
             };
+            
+            console.error(`[DEBUG] Final search query: "${searchRequest.requests[0].query.queryString}"`);
 
             const searchResults = await this.graphRequest("/search/query", "POST", searchRequest);
 
