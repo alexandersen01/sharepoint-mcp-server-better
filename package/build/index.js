@@ -373,8 +373,21 @@ class SharePointServer {
         try {
             this.allowedSiteId = await this.getSiteIdFromUrl(DEFAULT_SITE_URL);
             console.error(`[SECURITY] Allowed site ID cached: ${this.allowedSiteId}`);
+            
+            // Verify that the app has access to this site with Sites.Selected permission
+            await this.verifySiteAccess();
         } catch (error) {
             console.error(`[SECURITY] Failed to initialize security - could not get site ID: ${error.message}`);
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`Security initialization failed: Access denied to site ${DEFAULT_SITE_URL}. 
+
+This app uses Sites.Selected permission and requires explicit access to the SharePoint site.
+Please contact your SharePoint administrator to verify that the app has been granted access to this site.
+
+App ID: ${CLIENT_ID}
+Site URL: ${DEFAULT_SITE_URL}
+Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
+            }
             throw new Error(`Security initialization failed: ${error.message}`);
         }
     }
@@ -605,6 +618,19 @@ class SharePointServer {
         }
     }
 
+    async verifySiteAccess() {
+        try {
+            // Try to access the site to verify we have permission
+            await this.graphRequest(`/sites/${this.allowedSiteId}`);
+            console.error(`[SECURITY] Verified access to site ${this.allowedSiteId}`);
+        } catch (error) {
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`403 Forbidden: No access to site. Sites.Selected permission requires explicit site access.`);
+            }
+            throw error;
+        }
+    }
+
     async handleSearchFiles(args) {
         const query = args?.query;
         const limit = args?.limit || 10;
@@ -654,6 +680,11 @@ class SharePointServer {
                 }],
             };
         } catch (error) {
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`Search failed: Access denied to site ${DEFAULT_SITE_URL}. 
+                
+This app uses Sites.Selected permission. Please contact your SharePoint administrator to verify that the app has been granted access to this site.`);
+            }
             throw new Error(`Search failed: ${error}`);
         }
     }
@@ -672,6 +703,11 @@ class SharePointServer {
                 }],
             };
         } catch (error) {
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`Failed to get site info: Access denied to site ${DEFAULT_SITE_URL}. 
+                
+This app uses Sites.Selected permission. Please contact your SharePoint administrator to verify that the app has been granted access to this site.`);
+            }
             throw new Error(`Failed to get site info: ${error}`);
         }
     }
@@ -704,6 +740,11 @@ class SharePointServer {
                 }],
             };
         } catch (error) {
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`Failed to list drive items: Access denied to site ${DEFAULT_SITE_URL}. 
+                
+This app uses Sites.Selected permission. Please contact your SharePoint administrator to verify that the app has been granted access to this site.`);
+            }
             throw new Error(`Failed to list drive items: ${error}`);
         }
     }
@@ -792,9 +833,15 @@ class SharePointServer {
                 }
             }
         } catch (error) {
+            if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                throw new Error(`Failed to get file content: Access denied to site ${DEFAULT_SITE_URL}. 
+                
+This app uses Sites.Selected permission. Please contact your SharePoint administrator to verify that the app has been granted access to this site.`);
+            }
             throw new Error(`Failed to get file content: ${error}`);
         }
     }
+
 
     async run() {
         const transport = new StdioServerTransport();

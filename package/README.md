@@ -107,12 +107,14 @@ sharepoint-mcp-server
 
 1. Register an application in Azure Active Directory
 2. Configure API permissions:
-   - Microsoft Graph: `Sites.Read.All` (Application permission)
-   - Microsoft Graph: `Files.Read.All` (Application permission)
+   - Microsoft Graph: `Sites.Selected` (Application permission)
 3. Grant admin consent for the permissions
 4. Create a client secret
+5. **Verify site-specific permissions** (required for Sites.Selected):
 
-### Installation in librechat: 
+   The SharePoint administrator must have already granted access to the specific SharePoint site for your app registration. The app will verify access on startup and provide clear error messages if permissions are missing.
+
+### Installation in librechat:
 
 Open `librechat.yaml`
 
@@ -129,7 +131,7 @@ mcpServers:
       SEARCH_REGION: "EMEA"
       DEFAULT_FOLDER_PATH: "${DEFAULT_FOLDER_PATH}"
       DEFAULT_SITE_URL: "${DEFAULT_SITE_URL}"
-      
+
       TENANT_ID: "${TENANT_ID}"
       CLIENT_ID: "${CLIENT_ID}"
       CLIENT_SECRET: "${CLIENT_SECRET}"
@@ -141,7 +143,7 @@ mcpServers:
       - Document libraries
       - Lists and list items
       - File operations (read, search, metadata)
-  
+
 ```
 
 **Remember to run the following command to restart the container**
@@ -151,6 +153,7 @@ ssh -p 22 USER@SSH_ADDR 'cd /home/USER/LibreChat && docker compose -f ./deploy-c
 ```
 
 If `deploy-compose.override.yml` is not found:
+
 ```bash
 ssh -p 22 USERs@SSH_ADDR 'cd /home/USER/LibreChat && docker compose -f ./deploy-compose.yml down && docker compose -f ./deploy-compose.yml pull && docker compose -f ./deploy-compose.yml up -d --remove-orphans'
 ```
@@ -169,8 +172,6 @@ CLIENT_SECRET=your-azure-app-client-secret
 DEFAULT_SITE_URL=https://yourtenant.sharepoint.com/sites/yoursite
 DEFAULT_FOLDER_PATH=Documents/YourFolder
 ```
-
-
 
 #### Site and Folder Filtering
 
@@ -271,6 +272,38 @@ The server implements a service-oriented architecture with clear separation of c
 - Client secrets should be stored securely and never committed to version control
 - Application permissions require admin consent in Azure AD
 
+### Sites.Selected vs Sites.ReadAll/Files.ReadAll
+
+This server is configured to work with `Sites.Selected` permission for enhanced security:
+
+**Sites.Selected Benefits:**
+
+- ✅ Follows principle of least privilege
+- ✅ Only grants access to explicitly allowed SharePoint sites
+- ✅ Reduces security risk and compliance concerns
+- ✅ Better for enterprise environments
+
+**Migration from Sites.ReadAll/Files.ReadAll:**
+If you're upgrading from broader permissions:
+
+1. **Update Azure App Registration:**
+
+   - Remove `Sites.Read.All` and `Files.Read.All` permissions
+   - Add `Sites.Selected` permission
+   - Grant admin consent
+
+2. **Verify Site-Specific Access:**
+
+   - Ensure your SharePoint administrator has granted the app access to the required sites
+   - Only sites with explicit permissions will be accessible
+
+3. **Expected Changes:**
+   - App will only access the configured `DEFAULT_SITE_URL`
+   - Access to other SharePoint sites will be denied (403 errors)
+   - More detailed error messages guide you through permission setup
+
+**Important:** The `DEFAULT_SITE_URL` must be set and the app must have explicit permissions to that site, or the server will fail to start with clear guidance on how to fix it.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -278,6 +311,11 @@ The server implements a service-oriented architecture with clear separation of c
 1. **Authentication Errors**: Verify Azure app registration and permissions
 2. **Site Access**: Ensure the app has appropriate SharePoint permissions
 3. **Network Issues**: Check firewall settings for Microsoft Graph API access
+4. **Sites.Selected Permission Issues**:
+   - **403 Forbidden errors**: App doesn't have access to the specific SharePoint site
+   - **"Security initialization failed"**: Site permissions not granted yet
+   - **Solution**: Contact your SharePoint administrator to verify site permissions have been granted
+5. **Server fails to start**: Check that `DEFAULT_SITE_URL` is set and accessible
 
 ### Debug Mode
 
