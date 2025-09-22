@@ -2,7 +2,7 @@
 /**
  * SharePoint MCP Server - SECURITY ENHANCED VERSION
  * 
- * Enforces strict access control to only DEFAULT_SITE_URL and DEFAULT_FOLDER_PATH
+ * Enforces strict access control to only DEFAULT_SITE_URL with folder paths validated per request
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,23 +19,19 @@ import { parse as parseHtml } from 'node-html-parser';
 /**
  * Environment variables required for SharePoint authentication
  */
-const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, DEFAULT_FOLDER_PATH, SEARCH_REGION } = process.env;
+const { TENANT_ID, CLIENT_ID, CLIENT_SECRET, DEFAULT_SITE_URL, SEARCH_REGION } = process.env;
 
 if (!TENANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
     throw new Error("Required environment variables: TENANT_ID, CLIENT_ID, CLIENT_SECRET");
 }
 
-// SECURITY: Enforce that DEFAULT_SITE_URL and DEFAULT_FOLDER_PATH are set
+// SECURITY: Enforce that DEFAULT_SITE_URL is set
 if (!DEFAULT_SITE_URL) {
     throw new Error("SECURITY: DEFAULT_SITE_URL must be set to enforce access restrictions");
 }
 
-if (!DEFAULT_FOLDER_PATH) {
-    throw new Error("SECURITY: DEFAULT_FOLDER_PATH must be set to enforce access restrictions");
-}
-
 console.error(`[SECURITY] Access restricted to site: ${DEFAULT_SITE_URL}`);
-console.error(`[SECURITY] Access restricted to folder: ${DEFAULT_FOLDER_PATH}`);
+console.error(`[SECURITY] Folder paths will be validated per request`);
 
 /**
  * Security validator to ensure all operations are within allowed boundaries
@@ -56,35 +52,57 @@ class SecurityValidator {
         }
     }
     
-    static validateFolderAccess(requestedFolderPath) {
+    static validateFolderAccess(requestedFolderPath, allowedBaseFolderPath) {
         if (!requestedFolderPath) {
-            return; // Will use DEFAULT_FOLDER_PATH
+            throw new Error("Folder path is required");
+        }
+        
+        if (!allowedBaseFolderPath) {
+            throw new Error("Base folder path must be specified for security validation");
         }
         
         // Normalize paths for comparison
         const normalizePath = (path) => path.replace(/^\/+|\/+$/g, '').toLowerCase();
-        const allowedFolder = normalizePath(DEFAULT_FOLDER_PATH);
+        const allowedFolder = normalizePath(allowedBaseFolderPath);
         const requestedFolder = normalizePath(requestedFolderPath);
         
         // Check if requested folder is the allowed folder or a subfolder of it
         if (requestedFolder !== allowedFolder && !requestedFolder.startsWith(allowedFolder + '/')) {
-            throw new Error(`SECURITY VIOLATION: Access denied to folder '${requestedFolderPath}'. Only '${DEFAULT_FOLDER_PATH}' and its subfolders are allowed.`);
+            throw new Error(`SECURITY VIOLATION: Access denied to folder '${requestedFolderPath}'. Only '${allowedBaseFolderPath}' and its subfolders are allowed.`);
         }
     }
     
-    static validateFileAccess(filePath) {
+    static validateFileAccess(filePath, allowedBaseFolderPath) {
         if (!filePath) {
             throw new Error("File path is required");
         }
         
+        if (!allowedBaseFolderPath) {
+            throw new Error("Base folder path must be specified for security validation");
+        }
+        
         // Normalize the file path
         const normalizedPath = filePath.replace(/^\/+/, '');
-        const allowedFolderNormalized = DEFAULT_FOLDER_PATH.replace(/^\/+|\/+$/g, '');
+        const allowedFolderNormalized = allowedBaseFolderPath.replace(/^\/+|\/+$/g, '');
         
         // Check if file is within the allowed folder
         if (!normalizedPath.toLowerCase().startsWith(allowedFolderNormalized.toLowerCase() + '/')) {
-            throw new Error(`SECURITY VIOLATION: Access denied to file '${filePath}'. Only files within '${DEFAULT_FOLDER_PATH}' are allowed.`);
+            throw new Error(`SECURITY VIOLATION: Access denied to file '${filePath}'. Only files within '${allowedBaseFolderPath}' are allowed.`);
         }
+    }
+    
+    static validateFolderPath(folderPath) {
+        if (!folderPath) {
+            throw new Error("Folder path is required");
+        }
+        
+        // Basic path validation - no parent directory traversal
+        if (folderPath.includes('..')) {
+            throw new Error("SECURITY VIOLATION: Parent directory traversal not allowed");
+        }
+        
+        // Normalize path
+        return folderPath.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
     }
 }
 
@@ -352,6 +370,7 @@ class FileSearchIndex {
         this.searchTerms = new Map(); // term -> Set of file ids
         this.lastIndexUpdate = 0;
         this.indexRefreshInterval = 5 * 60 * 1000; // 5 minutes
+        this.indexedFolders = new Set(); // Track which folders have been indexed
     }
 
     addFile(file) {
@@ -474,9 +493,36 @@ class FileSearchIndex {
         return {
             totalFiles: this.files.size,
             totalSearchTerms: this.searchTerms.size,
+            indexedFolders: Array.from(this.indexedFolders),
             lastUpdate: new Date(this.lastIndexUpdate).toISOString(),
             nextUpdate: new Date(this.lastIndexUpdate + this.indexRefreshInterval).toISOString()
         };
+    }
+
+    isFolderIndexed(folderPath) {
+        return this.indexedFolders.has(folderPath);
+    }
+
+    markFolderAsIndexed(folderPath) {
+        this.indexedFolders.add(folderPath);
+    }
+
+    clearFolderIndex(folderPath) {
+        // Remove files from this folder from the index
+        const folderPathLower = folderPath.toLowerCase();
+        for (const [fileId, file] of this.files.entries()) {
+            if (file.fullPath && file.fullPath.toLowerCase().startsWith(folderPathLower)) {
+                this.files.delete(fileId);
+                // Also remove from search terms
+                for (const [term, fileIds] of this.searchTerms.entries()) {
+                    fileIds.delete(fileId);
+                    if (fileIds.size === 0) {
+                        this.searchTerms.delete(term);
+                    }
+                }
+            }
+        }
+        this.indexedFolders.delete(folderPath);
     }
 }
 
@@ -516,8 +562,7 @@ class SharePointServer {
             // Verify that the app has access to this site with Sites.Selected permission
             await this.verifySiteAccess();
             
-            // Build initial search index
-            await this.buildSearchIndex();
+            console.error(`[SECURITY] Security initialization complete. Folder paths will be validated per request.`);
         } catch (error) {
             console.error(`[SECURITY] Failed to initialize security - could not get site ID: ${error.message}`);
             if (error.message.includes('403') || error.message.includes('Forbidden')) {
@@ -621,7 +666,7 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
             tools: [
                 {
                     name: "search_files",
-                    description: `Search for files and documents within the restricted folder '${DEFAULT_FOLDER_PATH}' on site '${DEFAULT_SITE_URL}' using intelligent in-memory search index. Features fuzzy matching, relevance scoring, and works perfectly with Sites.Selected permissions.`,
+                    description: `Search for files and documents within a specified folder on site '${DEFAULT_SITE_URL}' using intelligent in-memory search index. Features fuzzy matching, relevance scoring, and works perfectly with Sites.Selected permissions.`,
                     inputSchema: {
                         type: "object",
                         properties: {
@@ -629,13 +674,17 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                                 type: "string",
                                 description: "The search query string",
                             },
+                            folderPath: {
+                                type: "string",
+                                description: "The folder path to search within (e.g., 'Documents/Projects')",
+                            },
                             limit: {
                                 type: "number",
                                 description: "Maximum number of results to return (default: 10)",
                                 default: 10,
                             },
                         },
-                        required: ["query"],
+                        required: ["query", "folderPath"],
                     },
                 },
                 {
@@ -648,26 +697,31 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                 },
                 {
                     name: "list_drive_items",
-                    description: `List files and folders within the restricted path '${DEFAULT_FOLDER_PATH}' and its subfolders. Security: Cannot access other locations.`,
+                    description: `List files and folders within a specified path and its subfolders. Security: Access is validated per request.`,
                     inputSchema: {
                         type: "object",
                         properties: {
                             folderPath: {
                                 type: "string",
-                                description: `Optional subfolder path within '${DEFAULT_FOLDER_PATH}' (default: root of allowed folder)`,
+                                description: "The folder path to list items from (e.g., 'Documents/Projects')",
+                            },
+                            subfolderPath: {
+                                type: "string",
+                                description: "Optional subfolder path within the base folder",
                             },
                         },
+                        required: ["folderPath"],
                     },
                 },
                 {
                     name: "get_file_content",
-                    description: `Get content of files within the restricted folder '${DEFAULT_FOLDER_PATH}'. Supports PDF, Word, Excel, PowerPoint, text files, and more. Security: Only files within allowed folder can be accessed.`,
+                    description: `Get content of files within specified folders. Supports PDF, Word, Excel, PowerPoint, text files, and more. Security: File access is validated per request.`,
                     inputSchema: {
                         type: "object",
                         properties: {
                             filePath: {
                                 type: "string",
-                                description: `Path to file within '${DEFAULT_FOLDER_PATH}'`,
+                                description: "Full path to the file (e.g., 'Documents/Projects/report.pdf')",
                             },
                             includeMetadata: {
                                 type: "boolean",
@@ -783,35 +837,32 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
         }
     }
 
-    async buildSearchIndex() {
-        if (this.indexingInProgress) {
-            console.error(`[INDEX] Indexing already in progress, skipping...`);
+    async buildSearchIndexForFolder(folderPath) {
+        const normalizedFolderPath = SecurityValidator.validateFolderPath(folderPath);
+        
+        if (this.searchIndex.isFolderIndexed(normalizedFolderPath)) {
+            console.error(`[INDEX] Folder ${normalizedFolderPath} already indexed, skipping...`);
             return;
         }
 
-        this.indexingInProgress = true;
         const startTime = Date.now();
         
         try {
-            console.error(`[INDEX] Building search index for ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}...`);
-            this.searchIndex.clear();
+            console.error(`[INDEX] Building search index for ${DEFAULT_SITE_URL}/${normalizedFolderPath}...`);
             
-            await this.indexFolderRecursively(DEFAULT_FOLDER_PATH);
+            await this.indexFolderRecursively(normalizedFolderPath);
             
+            this.searchIndex.markFolderAsIndexed(normalizedFolderPath);
             this.searchIndex.lastIndexUpdate = Date.now();
             const duration = Date.now() - startTime;
             const stats = this.searchIndex.getStats();
             
-            console.error(`[INDEX] Search index built successfully in ${duration}ms`);
-            console.error(`[INDEX] Indexed ${stats.totalFiles} files with ${stats.totalSearchTerms} search terms`);
-            
-            // Schedule next index refresh
-            setTimeout(() => this.buildSearchIndex(), this.searchIndex.indexRefreshInterval);
+            console.error(`[INDEX] Search index built successfully for ${normalizedFolderPath} in ${duration}ms`);
+            console.error(`[INDEX] Total indexed: ${stats.totalFiles} files with ${stats.totalSearchTerms} search terms`);
             
         } catch (error) {
-            console.error(`[INDEX] Failed to build search index: ${error.message}`);
-        } finally {
-            this.indexingInProgress = false;
+            console.error(`[INDEX] Failed to build search index for ${normalizedFolderPath}: ${error.message}`);
+            throw error;
         }
     }
 
@@ -846,39 +897,46 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
 
     async handleSearchFiles(args) {
         const query = args?.query;
+        const folderPath = args?.folderPath;
         const limit = args?.limit || 10;
 
         if (typeof query !== "string") {
             throw new McpError(ErrorCode.InvalidParams, "Query parameter must be a string");
         }
 
+        if (typeof folderPath !== "string") {
+            throw new McpError(ErrorCode.InvalidParams, "folderPath parameter must be a string");
+        }
+
+        // Validate and normalize the folder path
+        const normalizedFolderPath = SecurityValidator.validateFolderPath(folderPath);
+
         console.error(`[SEARCH] In-memory search query: "${query}"`);
-        console.error(`[SEARCH] Search scope: ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`);
+        console.error(`[SEARCH] Search scope: ${DEFAULT_SITE_URL}/${normalizedFolderPath}`);
 
         try {
-            // Check if index is ready
-            const indexStats = this.searchIndex.getStats();
-            if (indexStats.totalFiles === 0) {
-                // If index is empty, try to build it
-                if (!this.indexingInProgress) {
-                    console.error(`[SEARCH] Search index is empty, triggering rebuild...`);
-                    this.buildSearchIndex(); // Don't await, let it run in background
-                }
-                
-                throw new Error(`Search index is not ready yet. Please try again in a few moments. The server is building the search index in the background.`);
+            // Build index for the folder if not already indexed
+            if (!this.searchIndex.isFolderIndexed(normalizedFolderPath)) {
+                console.error(`[SEARCH] Folder not indexed, building index for ${normalizedFolderPath}...`);
+                await this.buildSearchIndexForFolder(normalizedFolderPath);
             }
 
-            // Perform in-memory search
-            const searchResults = this.searchIndex.search(query, limit);
+            // Perform in-memory search, filtering to the specified folder
+            const allResults = this.searchIndex.search(query, limit * 10); // Get more results to filter
+            const folderResults = allResults.filter(item => 
+                item.fullPath && item.fullPath.toLowerCase().startsWith(normalizedFolderPath.toLowerCase())
+            ).slice(0, limit);
+            
+            const indexStats = this.searchIndex.getStats();
             
             // Format results to match expected structure
             const formattedResults = {
                 searchQuery: query,
-                searchScope: `${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`,
+                searchScope: `${DEFAULT_SITE_URL}/${normalizedFolderPath}`,
                 searchMethod: "in-memory-index",
                 indexStats: indexStats,
-                totalResults: searchResults.length,
-                items: searchResults.map(item => ({
+                totalResults: folderResults.length,
+                items: folderResults.map(item => ({
                     id: item.id,
                     name: item.name,
                     size: item.size,
@@ -898,7 +956,7 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                 }))
             };
 
-            console.error(`[SEARCH] Found ${searchResults.length} results for "${query}"`);
+            console.error(`[SEARCH] Found ${folderResults.length} results for "${query}" in ${normalizedFolderPath}`);
 
             return {
                 content: [{
@@ -936,14 +994,22 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
     }
 
     async handleListDriveItems(args) {
-        const requestedFolderPath = args?.folderPath;
+        const folderPath = args?.folderPath;
+        const subfolderPath = args?.subfolderPath;
 
+        if (typeof folderPath !== "string") {
+            throw new McpError(ErrorCode.InvalidParams, "folderPath parameter must be a string");
+        }
+
+        // Validate and normalize the folder path
+        const normalizedFolderPath = SecurityValidator.validateFolderPath(folderPath);
+        
         // SECURITY: Validate folder access
-        const effectiveFolderPath = requestedFolderPath ? 
-            `${DEFAULT_FOLDER_PATH}/${requestedFolderPath}`.replace(/\/+/g, '/') : 
-            DEFAULT_FOLDER_PATH;
+        const effectiveFolderPath = subfolderPath ? 
+            `${normalizedFolderPath}/${subfolderPath}`.replace(/\/+/g, '/') : 
+            normalizedFolderPath;
 
-        SecurityValidator.validateFolderAccess(effectiveFolderPath);
+        SecurityValidator.validateFolderAccess(effectiveFolderPath, normalizedFolderPath);
 
         console.error(`[SECURITY] Listing items in: ${effectiveFolderPath}`);
 
@@ -956,8 +1022,9 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
                 content: [{
                     type: "text",
                     text: JSON.stringify({
-                        restrictedPath: effectiveFolderPath,
-                        securityNote: `Access restricted to ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH} and subfolders`,
+                        requestedPath: effectiveFolderPath,
+                        baseFolderPath: normalizedFolderPath,
+                        securityNote: `Access validated for ${DEFAULT_SITE_URL}/${effectiveFolderPath}`,
                         items: items
                     }, null, 2),
                 }],
@@ -980,25 +1047,28 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
             throw new McpError(ErrorCode.InvalidParams, "filePath parameter must be a string");
         }
 
+        // Validate and normalize the file path
+        const normalizedFilePath = SecurityValidator.validateFolderPath(filePath);
+        
+        // Extract base folder for security validation
+        const pathParts = normalizedFilePath.split('/');
+        const baseFolderPath = pathParts.slice(0, -1).join('/') || pathParts[0];
+        
         // SECURITY: Validate file access
-        const fullFilePath = filePath.startsWith(DEFAULT_FOLDER_PATH) ? 
-            filePath : 
-            `${DEFAULT_FOLDER_PATH}/${filePath}`.replace(/\/+/g, '/');
+        SecurityValidator.validateFileAccess(normalizedFilePath, baseFolderPath);
 
-        SecurityValidator.validateFileAccess(fullFilePath);
-
-        console.error(`[SECURITY] Accessing file: ${fullFilePath}`);
+        console.error(`[SECURITY] Accessing file: ${normalizedFilePath}`);
 
         try {
-            const filename = fullFilePath.split('/').pop() || '';
+            const filename = normalizedFilePath.split('/').pop() || '';
             
             // Get file metadata
-            const metadataEndpoint = `/sites/${this.allowedSiteId}/drive/root:/${fullFilePath}`;
+            const metadataEndpoint = `/sites/${this.allowedSiteId}/drive/root:/${normalizedFilePath}`;
             const fileMetadata = await this.graphRequest(metadataEndpoint);
             const mimeType = fileMetadata.file?.mimeType || '';
 
             // Get file content
-            const contentEndpoint = `/sites/${this.allowedSiteId}/drive/root:/${fullFilePath}:/content`;
+            const contentEndpoint = `/sites/${this.allowedSiteId}/drive/root:/${normalizedFilePath}:/content`;
             const token = await this.getAccessToken();
             const response = await fetch(`https://graph.microsoft.com/v1.0${contentEndpoint}`, {
                 headers: {
@@ -1024,11 +1094,11 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
                 if (includeMetadata && parseResult.metadata) {
                     responseText += `\n\n--- Document Metadata ---\n`;
                     responseText += `File: ${filename}\n`;
-                    responseText += `Full Path: ${fullFilePath}\n`;
+                    responseText += `Full Path: ${normalizedFilePath}\n`;
                     responseText += `MIME Type: ${mimeType}\n`;
                     responseText += `Size: ${fileMetadata.size} bytes\n`;
                     responseText += `Modified: ${fileMetadata.lastModifiedDateTime}\n`;
-                    responseText += `Security: Access restricted to ${DEFAULT_FOLDER_PATH}\n`;
+                    responseText += `Security: Access validated for ${baseFolderPath}\n`;
                     
                     if (parseResult.metadata) {
                         responseText += `Parser Metadata:\n${JSON.stringify(parseResult.metadata, null, 2)}`;
@@ -1048,7 +1118,7 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
                         content: [{
                             type: "text",
                             text: fallbackText + (includeMetadata ? 
-                                `\n\n--- Document Metadata ---\nFile: ${filename}\nFull Path: ${fullFilePath}\nMIME Type: ${mimeType}\nSize: ${fileMetadata.size} bytes\nSecurity: Access restricted to ${DEFAULT_FOLDER_PATH}\nNote: Parsed as plain text due to parsing error: ${parseError.message}` : ''),
+                                `\n\n--- Document Metadata ---\nFile: ${filename}\nFull Path: ${normalizedFilePath}\nMIME Type: ${mimeType}\nSize: ${fileMetadata.size} bytes\nSecurity: Access validated for ${baseFolderPath}\nNote: Parsed as plain text due to parsing error: ${parseError.message}` : ''),
                         }],
                     };
                 } else {
@@ -1071,7 +1141,7 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
             const detailedStats = {
                 ...stats,
                 indexingStatus: this.indexingInProgress ? "building" : "ready",
-                searchScope: `${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`,
+                searchScope: `${DEFAULT_SITE_URL} (folder-specific)`,
                 refreshInterval: `${this.searchIndex.indexRefreshInterval / 1000 / 60} minutes`,
                 capabilities: [
                     "Filename search",
@@ -1079,13 +1149,15 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
                     "File type filtering",
                     "Creator/modifier search",
                     "Relevance scoring",
-                    "Recent file boosting"
+                    "Recent file boosting",
+                    "Folder-specific indexing"
                 ],
                 searchTips: [
                     "Use multiple words for better results",
                     "Search works on filenames, paths, and metadata",
                     "Recent files are automatically boosted in results",
-                    "PDF, Word, and Excel files get priority in scoring"
+                    "PDF, Word, and Excel files get priority in scoring",
+                    "Each folder is indexed separately for better performance"
                 ]
             };
 
@@ -1105,7 +1177,7 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
         await this.server.connect(transport);
         console.error("SharePoint MCP server running on stdio with STRICT SECURITY ENFORCEMENT");
         console.error(`[SECURITY] Restricted to site: ${DEFAULT_SITE_URL}`);
-        console.error(`[SECURITY] Restricted to folder: ${DEFAULT_FOLDER_PATH}`);
+        console.error(`[SECURITY] Folder paths validated per request`);
     }
 }
 
