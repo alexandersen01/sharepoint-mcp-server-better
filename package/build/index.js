@@ -344,6 +344,143 @@ class DocumentParser {
 }
 
 /**
+ * In-memory search index for SharePoint files
+ */
+class FileSearchIndex {
+    constructor() {
+        this.files = new Map(); // id -> file metadata
+        this.searchTerms = new Map(); // term -> Set of file ids
+        this.lastIndexUpdate = 0;
+        this.indexRefreshInterval = 5 * 60 * 1000; // 5 minutes
+    }
+
+    addFile(file) {
+        const id = file.id;
+        this.files.set(id, {
+            ...file,
+            searchableText: this.createSearchableText(file)
+        });
+
+        // Index searchable terms
+        const terms = this.extractSearchTerms(file);
+        terms.forEach(term => {
+            if (!this.searchTerms.has(term)) {
+                this.searchTerms.set(term, new Set());
+            }
+            this.searchTerms.get(term).add(id);
+        });
+    }
+
+    createSearchableText(file) {
+        const parts = [
+            file.name || '',
+            file.file?.mimeType || '',
+            file.createdBy?.user?.displayName || '',
+            file.lastModifiedBy?.user?.displayName || '',
+            file.parentReference?.path || ''
+        ];
+        return parts.join(' ').toLowerCase();
+    }
+
+    extractSearchTerms(file) {
+        const text = this.createSearchableText(file);
+        const terms = new Set();
+        
+        // Split by various delimiters and extract meaningful terms
+        const words = text.split(/[\s\-_\.\/\\,;:()[\]{}'"]+/)
+            .filter(word => word.length >= 2)
+            .map(word => word.toLowerCase());
+        
+        words.forEach(word => {
+            terms.add(word);
+            // Add partial matches for better search
+            if (word.length >= 3) {
+                for (let i = 0; i <= word.length - 3; i++) {
+                    terms.add(word.substring(i, i + 3));
+                }
+            }
+        });
+
+        return Array.from(terms);
+    }
+
+    search(query, limit = 10) {
+        const searchTerms = query.toLowerCase().split(/\s+/).filter(term => term.length >= 2);
+        const candidateIds = new Set();
+        const scores = new Map();
+
+        // Find files containing search terms
+        searchTerms.forEach(term => {
+            // Exact matches
+            if (this.searchTerms.has(term)) {
+                this.searchTerms.get(term).forEach(id => {
+                    candidateIds.add(id);
+                    scores.set(id, (scores.get(id) || 0) + 10);
+                });
+            }
+
+            // Partial matches
+            for (const [indexTerm, fileIds] of this.searchTerms.entries()) {
+                if (indexTerm.includes(term) || term.includes(indexTerm)) {
+                    fileIds.forEach(id => {
+                        candidateIds.add(id);
+                        scores.set(id, (scores.get(id) || 0) + 5);
+                    });
+                }
+            }
+        });
+
+        // Additional scoring based on file properties
+        candidateIds.forEach(id => {
+            const file = this.files.get(id);
+            if (file) {
+                const fileName = file.name.toLowerCase();
+                
+                // Boost exact filename matches
+                if (fileName.includes(query.toLowerCase())) {
+                    scores.set(id, scores.get(id) + 20);
+                }
+
+                // Boost recent files
+                if (file.lastModifiedDateTime) {
+                    const daysOld = (Date.now() - new Date(file.lastModifiedDateTime).getTime()) / (1000 * 60 * 60 * 24);
+                    if (daysOld < 30) scores.set(id, scores.get(id) + 5);
+                    if (daysOld < 7) scores.set(id, scores.get(id) + 5);
+                }
+
+                // Boost certain file types
+                const mimeType = file.file?.mimeType || '';
+                if (mimeType.includes('pdf') || mimeType.includes('word') || mimeType.includes('excel')) {
+                    scores.set(id, scores.get(id) + 3);
+                }
+            }
+        });
+
+        // Sort by score and return top results
+        const sortedResults = Array.from(candidateIds)
+            .map(id => ({ id, file: this.files.get(id), score: scores.get(id) || 0 }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit);
+
+        return sortedResults.map(result => result.file);
+    }
+
+    clear() {
+        this.files.clear();
+        this.searchTerms.clear();
+    }
+
+    getStats() {
+        return {
+            totalFiles: this.files.size,
+            totalSearchTerms: this.searchTerms.size,
+            lastUpdate: new Date(this.lastIndexUpdate).toISOString(),
+            nextUpdate: new Date(this.lastIndexUpdate + this.indexRefreshInterval).toISOString()
+        };
+    }
+}
+
+/**
  * SharePoint MCP Server implementation with enforced security restrictions
  */
 class SharePointServer {
@@ -351,6 +488,8 @@ class SharePointServer {
     accessToken = null;
     tokenExpiry = 0;
     allowedSiteId = null; // Cache the allowed site ID
+    searchIndex = new FileSearchIndex(); // In-memory search index
+    indexingInProgress = false;
 
     constructor() {
         this.server = new Server({
@@ -376,6 +515,9 @@ class SharePointServer {
             
             // Verify that the app has access to this site with Sites.Selected permission
             await this.verifySiteAccess();
+            
+            // Build initial search index
+            await this.buildSearchIndex();
         } catch (error) {
             console.error(`[SECURITY] Failed to initialize security - could not get site ID: ${error.message}`);
             if (error.message.includes('403') || error.message.includes('Forbidden')) {
@@ -479,7 +621,7 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
             tools: [
                 {
                     name: "search_files",
-                    description: `Search for files and documents within the restricted folder '${DEFAULT_FOLDER_PATH}' on site '${DEFAULT_SITE_URL}'. Security: Access is strictly limited to this location.`,
+                    description: `Search for files and documents within the restricted folder '${DEFAULT_FOLDER_PATH}' on site '${DEFAULT_SITE_URL}' using intelligent in-memory search index. Features fuzzy matching, relevance scoring, and works perfectly with Sites.Selected permissions.`,
                     inputSchema: {
                         type: "object",
                         properties: {
@@ -536,6 +678,14 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                         required: ["filePath"],
                     },
                 },
+                {
+                    name: "get_search_index_stats",
+                    description: `Get statistics about the in-memory search index including file count, search terms, and last update time.`,
+                    inputSchema: {
+                        type: "object",
+                        properties: {},
+                    },
+                },
             ],
         }));
 
@@ -550,6 +700,8 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                         return await this.handleListDriveItems(request.params.arguments);
                     case "get_file_content":
                         return await this.handleGetFileContent(request.params.arguments);
+                    case "get_search_index_stats":
+                        return await this.handleGetSearchIndexStats(request.params.arguments);
                     default:
                         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
                 }
@@ -631,6 +783,67 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
         }
     }
 
+    async buildSearchIndex() {
+        if (this.indexingInProgress) {
+            console.error(`[INDEX] Indexing already in progress, skipping...`);
+            return;
+        }
+
+        this.indexingInProgress = true;
+        const startTime = Date.now();
+        
+        try {
+            console.error(`[INDEX] Building search index for ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}...`);
+            this.searchIndex.clear();
+            
+            await this.indexFolderRecursively(DEFAULT_FOLDER_PATH);
+            
+            this.searchIndex.lastIndexUpdate = Date.now();
+            const duration = Date.now() - startTime;
+            const stats = this.searchIndex.getStats();
+            
+            console.error(`[INDEX] Search index built successfully in ${duration}ms`);
+            console.error(`[INDEX] Indexed ${stats.totalFiles} files with ${stats.totalSearchTerms} search terms`);
+            
+            // Schedule next index refresh
+            setTimeout(() => this.buildSearchIndex(), this.searchIndex.indexRefreshInterval);
+            
+        } catch (error) {
+            console.error(`[INDEX] Failed to build search index: ${error.message}`);
+        } finally {
+            this.indexingInProgress = false;
+        }
+    }
+
+    async indexFolderRecursively(folderPath, depth = 0) {
+        if (depth > 10) { // Prevent infinite recursion
+            console.error(`[INDEX] Maximum depth reached for folder: ${folderPath}`);
+            return;
+        }
+
+        try {
+            const endpoint = `/sites/${this.allowedSiteId}/drive/root:/${folderPath}:/children`;
+            const response = await this.graphRequest(endpoint);
+            const items = response.value || [];
+
+            for (const item of items) {
+                if (item.folder) {
+                    // Recursively index subfolders
+                    const subfolderPath = `${folderPath}/${item.name}`.replace(/\/+/g, '/');
+                    await this.indexFolderRecursively(subfolderPath, depth + 1);
+                } else {
+                    // Index file
+                    this.searchIndex.addFile({
+                        ...item,
+                        fullPath: `${folderPath}/${item.name}`.replace(/\/+/g, '/')
+                    });
+                }
+            }
+        } catch (error) {
+            console.error(`[INDEX] Failed to index folder ${folderPath}: ${error.message}`);
+        }
+    }
+
     async handleSearchFiles(args) {
         const query = args?.query;
         const limit = args?.limit || 10;
@@ -639,53 +852,63 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
             throw new McpError(ErrorCode.InvalidParams, "Query parameter must be a string");
         }
 
-        console.error(`[SECURITY] Search restricted to: ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`);
-        console.error(`[DEBUG] Search query received: "${query}"`);
+        console.error(`[SEARCH] In-memory search query: "${query}"`);
+        console.error(`[SEARCH] Search scope: ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`);
 
         try {
-            // SECURITY: Search is automatically restricted to allowed site and folder
-            const searchRequest = {
-                requests: [{
-                    entityTypes: ["driveItem"],
-                    query: {
-                        queryString: `${query} AND site:"${DEFAULT_SITE_URL}"`,
-                    },
-                    size: limit,
-                    region: SEARCH_REGION || "EMEA",
-                }],
-            };
-            
-            console.error(`[DEBUG] Final search query: "${searchRequest.requests[0].query.queryString}"`);
-
-            const searchResults = await this.graphRequest("/search/query", "POST", searchRequest);
-
-            // SECURITY: Additional filtering to ensure only allowed site results
-            if (searchResults.value && searchResults.value[0]?.hitsContainers) {
-                searchResults.value[0].hitsContainers = searchResults.value[0].hitsContainers.map(container => ({
-                    ...container,
-                    hits: container.hits?.filter(hit => {
-                        const isAllowedSite = hit.resource?.parentReference?.siteId === this.allowedSiteId ||
-                                            hit.resource?.webUrl?.includes(DEFAULT_SITE_URL);
-                        const isWithinAllowedFolder = hit.resource?.parentReference?.path?.includes(DEFAULT_FOLDER_PATH) ||
-                                                    hit.resource?.webUrl?.includes(DEFAULT_FOLDER_PATH);
-                        return isAllowedSite && isWithinAllowedFolder;
-                    }) || []
-                }));
+            // Check if index is ready
+            const indexStats = this.searchIndex.getStats();
+            if (indexStats.totalFiles === 0) {
+                // If index is empty, try to build it
+                if (!this.indexingInProgress) {
+                    console.error(`[SEARCH] Search index is empty, triggering rebuild...`);
+                    this.buildSearchIndex(); // Don't await, let it run in background
+                }
+                
+                throw new Error(`Search index is not ready yet. Please try again in a few moments. The server is building the search index in the background.`);
             }
+
+            // Perform in-memory search
+            const searchResults = this.searchIndex.search(query, limit);
+            
+            // Format results to match expected structure
+            const formattedResults = {
+                searchQuery: query,
+                searchScope: `${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`,
+                searchMethod: "in-memory-index",
+                indexStats: indexStats,
+                totalResults: searchResults.length,
+                items: searchResults.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    size: item.size,
+                    lastModified: item.lastModifiedDateTime,
+                    webUrl: item.webUrl,
+                    downloadUrl: item['@microsoft.graph.downloadUrl'],
+                    folder: item.folder ? true : false,
+                    file: item.file ? {
+                        mimeType: item.file.mimeType,
+                        hashes: item.file.hashes
+                    } : undefined,
+                    fullPath: item.fullPath,
+                    parentPath: item.parentReference?.path,
+                    createdBy: item.createdBy?.user?.displayName,
+                    lastModifiedBy: item.lastModifiedBy?.user?.displayName,
+                    searchScore: item.searchScore || 0
+                }))
+            };
+
+            console.error(`[SEARCH] Found ${searchResults.length} results for "${query}"`);
 
             return {
                 content: [{
                     type: "text",
-                    text: JSON.stringify(searchResults, null, 2),
+                    text: JSON.stringify(formattedResults, null, 2),
                 }],
             };
         } catch (error) {
-            if (error.message.includes('403') || error.message.includes('Forbidden')) {
-                throw new Error(`Search failed: Access denied to site ${DEFAULT_SITE_URL}. 
-                
-This app uses Sites.Selected permission. Please contact your SharePoint administrator to verify that the app has been granted access to this site.`);
-            }
-            throw new Error(`Search failed: ${error}`);
+            console.error(`[SEARCH] Search failed: ${error.message}`);
+            throw new Error(`Search failed: ${error.message}`);
         }
     }
 
@@ -842,6 +1065,40 @@ This app uses Sites.Selected permission. Please contact your SharePoint administ
         }
     }
 
+    async handleGetSearchIndexStats(args) {
+        try {
+            const stats = this.searchIndex.getStats();
+            const detailedStats = {
+                ...stats,
+                indexingStatus: this.indexingInProgress ? "building" : "ready",
+                searchScope: `${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`,
+                refreshInterval: `${this.searchIndex.indexRefreshInterval / 1000 / 60} minutes`,
+                capabilities: [
+                    "Filename search",
+                    "Partial word matching", 
+                    "File type filtering",
+                    "Creator/modifier search",
+                    "Relevance scoring",
+                    "Recent file boosting"
+                ],
+                searchTips: [
+                    "Use multiple words for better results",
+                    "Search works on filenames, paths, and metadata",
+                    "Recent files are automatically boosted in results",
+                    "PDF, Word, and Excel files get priority in scoring"
+                ]
+            };
+
+            return {
+                content: [{
+                    type: "text",
+                    text: JSON.stringify(detailedStats, null, 2),
+                }],
+            };
+        } catch (error) {
+            throw new Error(`Failed to get search index stats: ${error.message}`);
+        }
+    }
 
     async run() {
         const transport = new StdioServerTransport();

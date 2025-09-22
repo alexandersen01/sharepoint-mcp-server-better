@@ -34,12 +34,10 @@ The server now supports comprehensive document parsing for multiple file formats
 
 #### `search_files`
 
-Search for files and documents across SharePoint using Microsoft Graph Search API. Can be scoped to specific site and folder to reduce noise.
+Search for files and documents within the configured SharePoint site using drive-specific search. This method works with Sites.Selected permissions and is automatically scoped to the configured site and folder.
 
 - **Parameters**:
   - `query` (required): Search query string
-  - `siteUrl` (optional): SharePoint site URL to scope search to (uses DEFAULT_SITE_URL if not provided)
-  - `folderPath` (optional): Folder path to scope search to (uses DEFAULT_FOLDER_PATH if not provided)
   - `limit` (optional): Maximum results to return (default: 10)
 
 #### `list_sites`
