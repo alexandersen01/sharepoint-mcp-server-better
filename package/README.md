@@ -87,7 +87,7 @@ Get the content of a specific file from SharePoint. Supports comprehensive docum
 You can run the SharePoint MCP Server directly using npx without installing it globally:
 
 ```bash
-npx @alliottech/sharepoint-mcp-server
+npx @alexandersen01/sharepoint-mcp-server-better
 ```
 
 ### Global Installation
@@ -95,7 +95,7 @@ npx @alliottech/sharepoint-mcp-server
 Alternatively, you can install it globally:
 
 ```bash
-npm install -g @alliottech/sharepoint-mcp-server
+npm install -g @alexandersen01/sharepoint-mcp-server-better
 sharepoint-mcp-server
 ```
 
