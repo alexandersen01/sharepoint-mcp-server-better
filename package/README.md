@@ -34,7 +34,7 @@ The server now supports comprehensive document parsing for multiple file formats
 
 #### `search_files`
 
-Search for files and documents within the configured SharePoint site using drive-specific search. This method works with Sites.Selected permissions and is automatically scoped to the configured site and folder.
+Search for files and documents within the configured SharePoint site using drive-specific search. This method works with Sites.Selected permissions and is automatically scoped to the configured site. Target folder paths should be specified in your agent's system prompt.
 
 - **Parameters**:
   - `query` (required): Search query string
@@ -63,12 +63,12 @@ List document libraries (drives) in a SharePoint site
 
 #### `list_drive_items`
 
-List files and folders in a SharePoint document library. Uses DEFAULT_SITE_URL and DEFAULT_FOLDER_PATH if configured to reduce noise.
+List files and folders in a SharePoint document library. Uses DEFAULT_SITE_URL if configured to reduce noise. The folder path should be specified in your agent's system prompt to focus on specific directories.
 
 - **Parameters**:
   - `siteUrl` (optional): SharePoint site URL (uses DEFAULT_SITE_URL if not provided)
   - `driveId` (optional): Specific drive ID (uses default drive if not specified)
-  - `folderPath` (optional): Folder path to list items from (uses DEFAULT_FOLDER_PATH if available, otherwise root)
+  - `folderPath` (optional): Folder path to list items from (specify target folders in your agent system prompt)
 
 #### `get_file_content`
 
@@ -127,7 +127,6 @@ mcpServers:
       - "@alexandersen01/sharepoint-mcp-server-better"
     env:
       SEARCH_REGION: "EMEA"
-      DEFAULT_FOLDER_PATH: "${DEFAULT_FOLDER_PATH}"
       DEFAULT_SITE_URL: "${DEFAULT_SITE_URL}"
 
       TENANT_ID: "${TENANT_ID}"
@@ -141,6 +140,9 @@ mcpServers:
       - Document libraries
       - Lists and list items
       - File operations (read, search, metadata)
+
+      Focus your operations on the Documents/YourFolder directory within the configured site.
+      When listing drive items or searching files, prioritize content from this specific folder path.
 
 ```
 
@@ -168,17 +170,16 @@ CLIENT_SECRET=your-azure-app-client-secret
 
 # Optional: Set defaults to reduce noise and focus operations
 DEFAULT_SITE_URL=https://yourtenant.sharepoint.com/sites/yoursite
-DEFAULT_FOLDER_PATH=Documents/YourFolder
 ```
 
 #### Site and Folder Filtering
 
-To reduce noise and focus the agent on specific SharePoint sites and folders, you can set:
+To reduce noise and focus the agent on specific SharePoint sites and folders:
 
-- **DEFAULT_SITE_URL**: Default SharePoint site URL for operations
-- **DEFAULT_FOLDER_PATH**: Default folder path within the site
+- **DEFAULT_SITE_URL**: Default SharePoint site URL for operations (set via environment variable)
+- **Folder Path**: Specific folder path within the site (specified in the agent system prompt)
 
-When these are set, tools like `search_files`, `list_drive_items`, and `get_file_content` will use these defaults when site URL or folder path parameters are not explicitly provided. This helps keep the agent focused on relevant content without overwhelming it with organization-wide SharePoint data.
+When DEFAULT_SITE_URL is set, tools like `search_files`, `list_drive_items`, and `get_file_content` will use this default when site URL parameters are not explicitly provided. The folder path should be specified in your agent's system prompt to direct the AI to focus on specific folders. This helps keep the agent focused on relevant content without overwhelming it with organization-wide SharePoint data.
 
 ## Development
 
@@ -230,8 +231,7 @@ Add the server to your Claude Desktop configuration:
         "TENANT_ID": "your-azure-tenant-id",
         "CLIENT_ID": "your-azure-app-client-id",
         "CLIENT_SECRET": "your-azure-app-client-secret",
-        "DEFAULT_SITE_URL": "https://yourtenant.sharepoint.com/sites/yoursite",
-        "DEFAULT_FOLDER_PATH": "Documents/YourFolder"
+        "DEFAULT_SITE_URL": "https://yourtenant.sharepoint.com/sites/yoursite"
       }
     }
   }
