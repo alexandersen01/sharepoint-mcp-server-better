@@ -979,7 +979,7 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
                     type: "text",
                     text: JSON.stringify({
                         ...site,
-                        securityNote: `Access restricted to: ${DEFAULT_SITE_URL}/${DEFAULT_FOLDER_PATH}`
+                        securityNote: `Access restricted to: ${DEFAULT_SITE_URL}`
                     }, null, 2),
                 }],
             };
