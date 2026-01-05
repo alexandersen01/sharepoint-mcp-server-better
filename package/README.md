@@ -382,6 +382,13 @@ We welcome contributions! Please follow these guidelines:
 
 ## Changelog
 
+### [0.4.0] - Root Site Support & Security Updates
+
+- **NEW**: Support for root/intranet SharePoint sites (e.g., `https://tenant.sharepoint.com` without a subsite path)
+- **SECURITY**: Updated `mammoth` from 1.6.0 to 1.11.0 (fixes CVE-2025-11849 - Directory Traversal vulnerability)
+- **SECURITY**: Updated `xlsx` from 0.18.5 to 0.20.2 via SheetJS CDN (fixes CVE-2023-30533 Prototype Pollution and CVE-2024-22363 ReDoS)
+- **IMPROVED**: Graph API URL handling now correctly distinguishes between root sites and subsites
+
 ### [0.2.1] - Site and Folder Filtering
 
 - **NEW**: DEFAULT_SITE_URL environment variable for scoping operations to specific SharePoint site

@@ -817,6 +817,16 @@ Site ID: ${this.allowedSiteId || 'Unable to determine'}`);
             const url = new URL(siteUrl);
             const hostname = url.hostname;
             const pathname = url.pathname;
+            
+            // Handle root/intranet site (no path or just "/")
+            // Graph API format: /sites/{hostname} for root site
+            if (!pathname || pathname === '/') {
+                const response = await this.graphRequest(`/sites/${hostname}`);
+                return response.id;
+            }
+            
+            // Handle subsites with path
+            // Graph API format: /sites/{hostname}:{path} for subsites
             const response = await this.graphRequest(`/sites/${hostname}:${pathname}`);
             return response.id;
         } catch (error) {
